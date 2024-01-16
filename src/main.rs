@@ -1,57 +1,79 @@
 mod utils;
-use log::{debug, error, info, trace, LevelFilter};
-use md5::Md5;
-use sha2::{Digest, Sha256, Sha512};
+use log::{debug, info, error, trace, LevelFilter};
 use std::env;
 use std::fs::File;
-use std::io::Seek;
-use std::process::exit;
-
 use std::io;
+use std::process::exit;
+use md5::digest::FixedOutputReset;
+use md5::Md5;
+use sha2::{Digest, Sha256, Sha512};
+use std::io::Write;
 
-fn get_hashes(filename: &String) -> Option<()> {
-    debug!("Have to consider {}", filename);
-    let f = File::open(filename);
-    match f {
-        Ok(mut fd) => {
-            let mut h_md5 = Md5::new();
-            let mut h_sha256 = Sha256::new();
-            let mut h_sha512 = Sha512::new();
+#[derive(Debug)]
+struct HashChecker {
+    int_md5: Md5,
+    int_sha256: Sha256,
+    int_sha512: Sha512,
+    md5: String,
+    sha256: String,
+    sha512: String,
+}
 
-            io::copy(&mut fd, &mut h_sha512).ok()?;
-            let _ = fd.rewind();
-            let hash = h_sha512.finalize();
-            let s_hash = format!("{:x}", hash);
-            if filename.contains(&s_hash) {
-                info!("OK - SHA512\t{}", filename);
-                return None;
-            }
-
-            io::copy(&mut fd, &mut h_md5).ok()?;
-            let _ = fd.rewind();
-            let hash = h_md5.finalize();
-            let s_hash = format!("{:x}", hash);
-            if filename.contains(&s_hash) {
-                info!("OK - MD5   \t{}", filename);
-                return None;
-            }
-
-            io::copy(&mut fd, &mut h_sha256).ok()?;
-            let _ = fd.rewind();
-            let hash = h_sha256.finalize();
-            let s_hash = format!("{:x}", hash);
-            if filename.contains(&s_hash) {
-                info!("OK - SHA256\t{}", filename);
-                return None;
-            }
-
-            error!("FAIL\t{}", filename);
-        }
-        Err(_) => {
-            error!("Cannot read {}", filename);
+impl HashChecker {
+    /// generate a new HashChecker
+    fn new() -> Self {
+        Self {
+            int_md5: Md5::new(),
+            int_sha256: Sha256::new(),
+            int_sha512: Sha512::new(),
+            md5: String::from(""),
+            sha256: String::from(""),
+            sha512: String::from(""),
         }
     }
-    None
+
+    /// show MD5, SHA256 and SHA512 in debug mode
+    fn show(&self) {
+        debug!("{:#?}", &self);
+    }
+
+    /// finalize the internal hashes and generate the strings accordingly
+    fn finalize(&mut self) {
+        let h1 = self.int_md5.finalize_fixed_reset();
+        self.md5 = format!("{:x}", h1);
+        let h2 = self.int_sha256.finalize_fixed_reset();
+        self.sha256 = format!("{:x}", h2);
+        let h3 = self.int_sha512.finalize_fixed_reset();
+        self.sha512 = format!("{:x}", h3);
+    }
+
+    /// check that a filename contains the hash of said file.
+    /// no result; a single log is shown (info! if OK / error! in other cases)
+    fn check(&self, filename: &String) {
+        let name = filename.to_lowercase();
+        if name.contains(&self.md5) || name.contains(&self.sha256) || name.contains(&self.sha512) {
+            info!("OK\t{}", filename);
+        } else {
+            error!("KO\t{}", filename);
+        }
+    }
+}
+
+/// impl Write trait so that we can use io::copy later
+impl Write for HashChecker {
+    /// update all internal hash states while reading the buffer only once
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        trace!("write is called: {}", buf.len());
+        self.int_md5.update(buf);
+        self.int_sha256.update(buf);
+        self.int_sha512.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        trace!("flush is called");
+        Ok(())
+    }
 }
 
 fn main() {
@@ -73,6 +95,20 @@ fn main() {
         }
     }
     for filename in args.iter() {
-        get_hashes(filename);
+        let f = File::open(filename);
+        match f {
+            Ok(mut fd) => {
+                let mut hc = HashChecker::new();
+                let _ = io::copy(&mut fd, &mut hc);
+                let _ = hc.flush();
+                hc.finalize();
+                hc.show();
+                hc.check(filename);
+            }
+            Err(_) => {
+                error!("Cannot read {}", filename);
+            }
+        }
     }
+    trace!("hashcheck end");
 }
